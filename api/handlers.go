@@ -1,13 +1,18 @@
 package api
 
 import (
+	"embed"
 	"encoding/json"
+	"io/fs"
 	"log"
 	"mailer/storage"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+//go:embed web/*
+var webFS embed.FS
 
 // Handler provides HTTP handlers for the API
 type Handler struct {
@@ -27,8 +32,9 @@ func (h *Handler) SetupRoutes() http.Handler {
 	mux.HandleFunc("/api/emails", h.handleEmails)
 	mux.HandleFunc("/api/emails/", h.handleEmailByID)
 
-	// Static files
-	mux.Handle("/", http.FileServer(http.Dir("./web")))
+	// Static files from embedded filesystem
+	webContent, _ := fs.Sub(webFS, "web")
+	mux.Handle("/", http.FileServer(http.FS(webContent)))
 
 	return h.corsMiddleware(mux)
 }
