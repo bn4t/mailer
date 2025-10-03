@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mailer</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .stats {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+            height: calc(100vh - 140px);
+        }
+
+        .email-list {
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .list-header {
+            padding: 15px;
+            background: #34495e;
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .list-header h2 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .delete-all-btn {
+            background: #e74c3c;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .delete-all-btn:hover {
+            background: #c0392b;
+        }
+
+        .emails {
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .email-item {
+            padding: 15px;
+            border-bottom: 1px solid #ecf0f1;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .email-item:hover {
+            background: #f8f9fa;
+        }
+
+        .email-item.selected {
+            background: #e8f4f8;
+            border-left: 3px solid #3498db;
+        }
+
+        .email-from {
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 4px;
+            font-size: 14px;
+        }
+
+        .email-subject {
+            color: #555;
+            margin-bottom: 4px;
+            font-size: 13px;
+        }
+
+        .email-date {
+            color: #95a5a6;
+            font-size: 11px;
+        }
+
+        .email-detail {
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .detail-header {
+            padding: 15px;
+            background: #34495e;
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .detail-header h2 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .delete-btn {
+            background: #e74c3c;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .delete-btn:hover {
+            background: #c0392b;
+        }
+
+        .detail-content {
+            padding: 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .detail-row {
+            margin-bottom: 15px;
+        }
+
+        .detail-label {
+            font-weight: 600;
+            color: #7f8c8d;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .detail-value {
+            color: #2c3e50;
+            font-size: 14px;
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #ecf0f1;
+            margin-bottom: 15px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: #7f8c8d;
+            font-size: 14px;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+        }
+
+        .tab.active {
+            color: #3498db;
+            border-bottom-color: #3498db;
+        }
+
+        .tab:hover {
+            color: #2980b9;
+        }
+
+        .body-content {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .html-content {
+            border: 1px solid #ecf0f1;
+            border-radius: 4px;
+            min-height: 200px;
+        }
+
+        .html-content iframe {
+            width: 100%;
+            min-height: 400px;
+            border: none;
+        }
+
+        .empty-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #95a5a6;
+            font-size: 14px;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #95a5a6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" x-data="mailApp()">
+        <header>
+            <div>
+                <h1>📧 Mailer</h1>
+                <div class="stats">SMTP: localhost:2500 | Web: localhost:8080</div>
+            </div>
+            <div class="stats">
+                <span x-text="emails.length"></span> email(s) captured
+            </div>
+        </header>
+
+        <div class="layout">
+            <!-- Email List -->
+            <div class="email-list">
+                <div class="list-header">
+                    <h2>Inbox</h2>
+                    <button class="delete-all-btn" @click="deleteAll()" x-show="emails.length > 0">
+                        Delete All
+                    </button>
+                </div>
+                <div class="emails">
+                    <template x-if="emails.length === 0">
+                        <div class="empty-state">
+                            <div>
+                                <p>No emails yet.</p>
+                                <p>Send an email to localhost:2500 to see it here.</p>
+                            </div>
+                        </div>
+                    </template>
+                    <template x-for="email in emails" :key="email.id">
+                        <div
+                            class="email-item"
+                            :class="{ 'selected': selectedEmail && selectedEmail.id === email.id }"
+                            @click="selectEmail(email.id)">
+                            <div class="email-from" x-text="email.from"></div>
+                            <div class="email-subject" x-text="email.subject || '(No subject)'"></div>
+                            <div class="email-date" x-text="formatDate(email.receivedAt)"></div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Email Detail -->
+            <div class="email-detail">
+                <div class="detail-header">
+                    <h2>Email Details</h2>
+                    <button class="delete-btn" @click="deleteEmail(selectedEmail.id)" x-show="selectedEmail">
+                        Delete
+                    </button>
+                </div>
+                <div class="detail-content">
+                    <template x-if="!selectedEmail">
+                        <div class="empty-state">
+                            <p>Select an email to view its details</p>
+                        </div>
+                    </template>
+                    <template x-if="selectedEmail">
+                        <div>
+                            <div class="detail-row">
+                                <div class="detail-label">From</div>
+                                <div class="detail-value" x-text="selectedEmail.from"></div>
+                            </div>
+                            <div class="detail-row">
+                                <div class="detail-label">To</div>
+                                <div class="detail-value" x-text="selectedEmail.to.join(', ')"></div>
+                            </div>
+                            <div class="detail-row">
+                                <div class="detail-label">Subject</div>
+                                <div class="detail-value" x-text="selectedEmail.subject || '(No subject)'"></div>
+                            </div>
+                            <div class="detail-row">
+                                <div class="detail-label">Date</div>
+                                <div class="detail-value" x-text="formatFullDate(selectedEmail.date)"></div>
+                            </div>
+
+                            <div class="tabs">
+                                <button class="tab" :class="{ 'active': activeTab === 'text' }" @click="activeTab = 'text'">
+                                    Plain Text
+                                </button>
+                                <button class="tab" :class="{ 'active': activeTab === 'html' }" @click="activeTab = 'html'" x-show="selectedEmail.htmlBody">
+                                    HTML
+                                </button>
+                                <button class="tab" :class="{ 'active': activeTab === 'headers' }" @click="activeTab = 'headers'">
+                                    Headers
+                                </button>
+                            </div>
+
+                            <div x-show="activeTab === 'text'">
+                                <div class="detail-row">
+                                    <div class="body-content" x-text="selectedEmail.body || '(No text content)'"></div>
+                                </div>
+                            </div>
+
+                            <div x-show="activeTab === 'html'" x-ref="htmlContainer">
+                                <div class="detail-row">
+                                    <div class="html-content">
+                                        <iframe x-ref="htmlFrame" sandbox="allow-same-origin"></iframe>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div x-show="activeTab === 'headers'">
+                                <div class="detail-row">
+                                    <div class="body-content" x-text="selectedEmail.rawHeaders"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function mailApp() {
+            return {
+                emails: [],
+                selectedEmail: null,
+                activeTab: 'text',
+
+                init() {
+                    this.fetchEmails();
+                    // Auto-refresh every 2 seconds
+                    setInterval(() => this.fetchEmails(), 2000);
+                },
+
+                async fetchEmails() {
+                    try {
+                        const response = await fetch('/api/emails');
+                        const newEmails = await response.json();
+
+                        // Sort by received date, newest first
+                        this.emails = newEmails.sort((a, b) =>
+                            new Date(b.receivedAt) - new Date(a.receivedAt)
+                        );
+
+                        // Update selected email if it exists
+                        if (this.selectedEmail) {
+                            const updated = this.emails.find(e => e.id === this.selectedEmail.id);
+                            if (updated) {
+                                this.selectedEmail = updated;
+                            } else {
+                                this.selectedEmail = null;
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error fetching emails:', error);
+                    }
+                },
+
+                async selectEmail(id) {
+                    try {
+                        const response = await fetch(`/api/emails/${id}`);
+                        this.selectedEmail = await response.json();
+                        this.activeTab = 'text';
+
+                        // Wait for next tick to ensure iframe is rendered
+                        await this.$nextTick();
+
+                        // Load HTML content if available
+                        if (this.selectedEmail.htmlBody && this.$refs.htmlFrame) {
+                            const iframe = this.$refs.htmlFrame;
+                            const doc = iframe.contentDocument || iframe.contentWindow.document;
+                            doc.open();
+                            doc.write(this.selectedEmail.htmlBody);
+                            doc.close();
+                        }
+                    } catch (error) {
+                        console.error('Error fetching email:', error);
+                    }
+                },
+
+                async deleteEmail(id) {
+                    if (!confirm('Delete this email?')) return;
+
+                    try {
+                        await fetch(`/api/emails/${id}`, { method: 'DELETE' });
+                        this.selectedEmail = null;
+                        await this.fetchEmails();
+                    } catch (error) {
+                        console.error('Error deleting email:', error);
+                    }
+                },
+
+                async deleteAll() {
+                    if (!confirm('Delete all emails?')) return;
+
+                    try {
+                        await fetch('/api/emails', { method: 'DELETE' });
+                        this.selectedEmail = null;
+                        await this.fetchEmails();
+                    } catch (error) {
+                        console.error('Error deleting all emails:', error);
+                    }
+                },
+
+                formatDate(dateStr) {
+                    const date = new Date(dateStr);
+                    const now = new Date();
+                    const diff = now - date;
+
+                    if (diff < 60000) return 'Just now';
+                    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+                    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+
+                    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+                },
+
+                formatFullDate(dateStr) {
+                    const date = new Date(dateStr);
+                    return date.toLocaleString();
+                }
+            };
+        }
+    </script>
+</body>
+</html>
