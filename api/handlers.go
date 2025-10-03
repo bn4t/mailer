@@ -17,15 +17,17 @@ var webFS embed.FS
 // Handler provides HTTP handlers for the API
 type Handler struct {
 	store    *storage.Store
-	smtpPort int
+	smtpAddr string
+	imapAddr string
 	httpAddr string
 }
 
 // NewHandler creates a new API handler
-func NewHandler(store *storage.Store, smtpPort int, httpAddr string) *Handler {
+func NewHandler(store *storage.Store, smtpAddr string, imapAddr string, httpAddr string) *Handler {
 	return &Handler{
 		store:    store,
-		smtpPort: smtpPort,
+		smtpAddr: smtpAddr,
+		imapAddr: imapAddr,
 		httpAddr: httpAddr,
 	}
 }
@@ -54,7 +56,8 @@ func (h *Handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config := map[string]interface{}{
-		"smtpPort": h.smtpPort,
+		"smtpAddr": h.smtpAddr,
+		"imapAddr": h.imapAddr,
 		"httpAddr": h.httpAddr,
 	}
 

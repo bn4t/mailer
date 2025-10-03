@@ -257,7 +257,7 @@
         <header>
             <div>
                 <h1>📧 Mailer</h1>
-                <div class="stats">SMTP: localhost:<span x-text="smtpPort"></span> | Web: <span x-text="httpAddr"></span></div>
+                <div class="stats">SMTP: <span x-text="smtpAddr"></span> | IMAP: <span x-text="imapAddr"></span> | Web: <span x-text="httpAddr"></span></div>
             </div>
             <div class="stats">
                 <span x-text="emails.length"></span> email(s) captured
@@ -278,7 +278,7 @@
                         <div class="empty-state">
                             <div>
                                 <p>No emails yet.</p>
-                                <p>Send an email to localhost:<span x-text="smtpPort"></span> to see it here.</p>
+                                <p>Send an email to <span x-text="smtpAddr"></span> to see it here.</p>
                             </div>
                         </div>
                     </template>
@@ -371,8 +371,9 @@
             return {
                 emails: [],
                 selectedEmail: null,
-                activeTab: 'text',
-                smtpPort: 2500,
+                activeTab: 'html',
+                smtpAddr: ':2500',
+                imapAddr: ':1143',
                 httpAddr: ':8080',
 
                 init() {
@@ -386,7 +387,8 @@
                     try {
                         const response = await fetch('/api/config');
                         const config = await response.json();
-                        this.smtpPort = config.smtpPort;
+                        this.smtpAddr = config.smtpAddr;
+                        this.imapAddr = config.imapAddr;
                         this.httpAddr = config.httpAddr;
                     } catch (error) {
                         console.error('Error fetching config:', error);
@@ -421,7 +423,7 @@
                     try {
                         const response = await fetch(`/api/emails/${id}`);
                         this.selectedEmail = await response.json();
-                        this.activeTab = 'text';
+                        this.activeTab = this.selectedEmail.htmlBody ? 'html' : 'text';
 
                         // Wait for next tick to ensure iframe is rendered
                         await this.$nextTick();
