@@ -43,7 +43,16 @@ func main() {
 	// Start HTTP server in goroutine
 	go func() {
 		log.Printf("HTTP server starting on %s", *httpAddr)
-		log.Printf("Open http://localhost%s in your browser", *httpAddr)
+
+		// Construct proper URL for browser
+		browserURL := *httpAddr
+		if browserURL[0] == ':' {
+			browserURL = "localhost" + browserURL
+		} else if len(browserURL) >= 7 && browserURL[:7] == "0.0.0.0" {
+			browserURL = "localhost" + browserURL[7:]
+		}
+		log.Printf("Open http://%s in your browser", browserURL)
+
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
 		}
