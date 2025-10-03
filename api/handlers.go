@@ -16,12 +16,18 @@ var webFS embed.FS
 
 // Handler provides HTTP handlers for the API
 type Handler struct {
-	store *storage.Store
+	store    *storage.Store
+	smtpPort int
+	httpAddr string
 }
 
 // NewHandler creates a new API handler
-func NewHandler(store *storage.Store) *Handler {
-	return &Handler{store: store}
+func NewHandler(store *storage.Store, smtpPort int, httpAddr string) *Handler {
+	return &Handler{
+		store:    store,
+		smtpPort: smtpPort,
+		httpAddr: httpAddr,
+	}
 }
 
 // SetupRoutes configures all HTTP routes
@@ -29,6 +35,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	mux := http.NewServeMux()
 
 	// API routes
+	mux.HandleFunc("/api/config", h.handleConfig)
 	mux.HandleFunc("/api/emails", h.handleEmails)
 	mux.HandleFunc("/api/emails/", h.handleEmailByID)
 
@@ -37,6 +44,22 @@ func (h *Handler) SetupRoutes() http.Handler {
 	mux.Handle("/", http.FileServer(http.FS(webContent)))
 
 	return h.corsMiddleware(mux)
+}
+
+// handleConfig returns server configuration
+func (h *Handler) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	config := map[string]interface{}{
+		"smtpPort": h.smtpPort,
+		"httpAddr": h.httpAddr,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(config)
 }
 
 // handleEmails handles GET (list all) and DELETE (delete all)

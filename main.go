@@ -27,7 +27,7 @@ func main() {
 	store := storage.NewStore()
 
 	// Setup HTTP server
-	handler := api.NewHandler(store)
+	handler := api.NewHandler(store, *smtpPort, *httpAddr)
 	httpServer := &http.Server{
 		Addr:    *httpAddr,
 		Handler: handler.SetupRoutes(),
