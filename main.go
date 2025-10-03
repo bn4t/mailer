@@ -18,11 +18,10 @@ import (
 func main() {
 	// Parse command-line flags
 	smtpPort := flag.Int("smtp-port", 2500, "SMTP server port")
-	httpPort := flag.Int("http-port", 8080, "HTTP server port")
+	httpAddr := flag.String("http-addr", ":8080", "HTTP server bind address (e.g., 127.0.0.1:8080 or :8080)")
 	flag.Parse()
 
 	smtpAddr := fmt.Sprintf(":%d", *smtpPort)
-	httpAddr := fmt.Sprintf(":%d", *httpPort)
 
 	// Create storage
 	store := storage.NewStore()
@@ -30,7 +29,7 @@ func main() {
 	// Setup HTTP server
 	handler := api.NewHandler(store)
 	httpServer := &http.Server{
-		Addr:    httpAddr,
+		Addr:    *httpAddr,
 		Handler: handler.SetupRoutes(),
 	}
 
@@ -43,8 +42,8 @@ func main() {
 
 	// Start HTTP server in goroutine
 	go func() {
-		log.Printf("HTTP server starting on %s", httpAddr)
-		log.Printf("Open http://localhost%s in your browser", httpAddr)
+		log.Printf("HTTP server starting on %s", *httpAddr)
+		log.Printf("Open http://localhost%s in your browser", *httpAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
 		}

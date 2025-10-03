@@ -49,15 +49,16 @@ The application will start two servers:
 
 ### Command-Line Flags
 
-You can customize the ports using command-line flags:
+You can customize the server addresses using command-line flags:
 
 ```bash
-./mailer -smtp-port 2525 -http-port 8081
+./mailer -smtp-port 2525 -http-addr 127.0.0.1:8081
 ```
 
 Available flags:
 - `-smtp-port` - SMTP server port (default: 2500)
-- `-http-port` - HTTP server port (default: 8080)
+- `-http-addr` - HTTP server bind address (default: `:8080`)
+  - Examples: `:8080` (all interfaces), `127.0.0.1:8080` (localhost only), `192.168.1.5:8080`
 - `-h` - Show help
 
 ## Usage
@@ -125,9 +126,9 @@ The application provides a REST API:
 
 ## Configuration
 
-Ports can be customized using command-line flags (see above). The defaults are:
-- SMTP: port 2500
-- HTTP: port 8080
+Server addresses can be customized using command-line flags (see above). The defaults are:
+- SMTP: port 2500 (all interfaces)
+- HTTP: `:8080` (all interfaces on port 8080)
 
 ## Graceful Shutdown
 
