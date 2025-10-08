@@ -180,6 +180,13 @@ func (m *Mailbox) buildBody(email *models.Email, section *imap.BodySectionName) 
 		fmt.Fprintf(&buf, "To: %s\r\n", email.To[0])
 		fmt.Fprintf(&buf, "Subject: %s\r\n", email.Subject)
 		fmt.Fprintf(&buf, "Date: %s\r\n", email.Date.Format(time.RFC1123Z))
+
+		// Add Content-Type header
+		if email.HTMLBody != "" {
+			buf.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+		} else {
+			buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+		}
 		buf.WriteString("\r\n")
 
 		if email.HTMLBody != "" {
