@@ -349,7 +349,7 @@
                             <div x-show="activeTab === 'html'" x-ref="htmlContainer">
                                 <div class="detail-row">
                                     <div class="html-content">
-                                        <iframe x-ref="htmlFrame" sandbox="allow-same-origin"></iframe>
+                                        <iframe x-ref="htmlFrame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>
                                     </div>
                                 </div>
                             </div>
@@ -435,6 +435,24 @@
                             doc.open();
                             doc.write(this.selectedEmail.htmlBody);
                             doc.close();
+
+                            const anchors = doc.querySelectorAll('a[href]');
+                            anchors.forEach(anchor => {
+                                const href = anchor.getAttribute('href') || '';
+                                if (!/^https?:\/\//i.test(href.trim())) {
+                                    return;
+                                }
+
+                                anchor.setAttribute('target', '_blank');
+                                anchor.setAttribute('rel', 'noopener noreferrer');
+                                anchor.addEventListener('click', event => {
+                                    const opened = window.open(anchor.href, '_blank', 'noopener,noreferrer');
+                                    if (opened) {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                    }
+                                });
+                            });
                         }
                     } catch (error) {
                         console.error('Error fetching email:', error);
