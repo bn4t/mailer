@@ -24,15 +24,17 @@ func (b *Backend) Login(_ *imap.ConnInfo, username, password string) (backend.Us
 	// For development/testing, accept any credentials
 	// In production, you would validate credentials here
 	return &User{
-		username: username,
-		backend:  b,
+		username:     username,
+		backend:      b,
+		deletedFlags: make(map[uint32]bool),
 	}, nil
 }
 
 // User implements the IMAP user interface
 type User struct {
-	username string
-	backend  *Backend
+	username     string
+	backend      *Backend
+	deletedFlags map[uint32]bool // Persists across GetMailbox calls for STORE+EXPUNGE workflow
 }
 
 // Username returns the username
@@ -47,7 +49,7 @@ func (u *User) ListMailboxes(subscribed bool) ([]backend.Mailbox, error) {
 		name:         "INBOX",
 		user:         u,
 		backend:      u.backend,
-		deletedFlags: make(map[uint32]bool),
+		deletedFlags: u.deletedFlags,
 	}
 	return []backend.Mailbox{mailbox}, nil
 }
@@ -62,7 +64,7 @@ func (u *User) GetMailbox(name string) (backend.Mailbox, error) {
 		name:         name,
 		user:         u,
 		backend:      u.backend,
-		deletedFlags: make(map[uint32]bool),
+		deletedFlags: u.deletedFlags,
 	}, nil
 }
 

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"mailer/models"
+	"sort"
 	"sync"
 )
 
@@ -32,7 +33,7 @@ func (s *Store) Save(email *models.Email) int {
 	return email.ID
 }
 
-// GetAll returns all stored emails
+// GetAll returns all stored emails sorted by ID for consistent ordering
 func (s *Store) GetAll() []*models.Email {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -41,6 +42,11 @@ func (s *Store) GetAll() []*models.Email {
 	for _, email := range s.emails {
 		emails = append(emails, email)
 	}
+
+	// Sort by ID to ensure consistent sequence numbers (required for IMAP)
+	sort.Slice(emails, func(i, j int) bool {
+		return emails[i].ID < emails[j].ID
+	})
 
 	return emails
 }

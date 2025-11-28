@@ -81,7 +81,11 @@ func (m *Mailbox) ListMessages(uid bool, seqset *imap.SeqSet, items []imap.Fetch
 		uidNum := uint32(email.ID)
 
 		// Check if this message is in the requested sequence set
-		if !seqset.Contains(seqNum) {
+		checkNum := seqNum
+		if uid {
+			checkNum = uidNum
+		}
+		if !seqset.Contains(checkNum) {
 			continue
 		}
 
@@ -246,12 +250,19 @@ func (m *Mailbox) UpdateMessagesFlags(uid bool, seqset *imap.SeqSet, operation i
 	// Mark messages as deleted
 	for i, email := range emails {
 		seqNum := uint32(i + 1)
+		uidNum := uint32(email.ID)
 
-		if seqset.Contains(seqNum) {
+		// Check correct identifier based on uid flag
+		checkNum := seqNum
+		if uid {
+			checkNum = uidNum
+		}
+
+		if seqset.Contains(checkNum) {
 			if operation == imap.AddFlags || operation == imap.SetFlags {
-				m.deletedFlags[uint32(email.ID)] = true
+				m.deletedFlags[uidNum] = true
 			} else if operation == imap.RemoveFlags {
-				delete(m.deletedFlags, uint32(email.ID))
+				delete(m.deletedFlags, uidNum)
 			}
 		}
 	}

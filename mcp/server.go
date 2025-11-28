@@ -33,12 +33,16 @@ type ListEmailsInput struct {
 	From    string `json:"from,omitempty"`
 	To      string `json:"to,omitempty"`
 	Subject string `json:"subject,omitempty"`
+	Offset  int    `json:"offset,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
 }
 
 // ListEmailsOutput defines output for list_emails tool
 type ListEmailsOutput struct {
-	Emails []EmailSummary `json:"emails"`
-	Count  int            `json:"count"`
+	Emails     []EmailSummary `json:"emails"`
+	Count      int            `json:"count"`
+	TotalCount int            `json:"totalCount"`
+	HasMore    bool           `json:"hasMore"`
 }
 
 // EmailSummary provides a brief email summary
@@ -78,6 +82,12 @@ type StatsOutput struct {
 	HTTPAddr    string `json:"httpAddr"`
 }
 
+// DeleteAllEmailsOutput defines output for delete_all_emails tool
+type DeleteAllEmailsOutput struct {
+	DeletedCount int    `json:"deletedCount"`
+	Message      string `json:"message"`
+}
+
 // Run starts the MCP server
 func (s *Server) Run(ctx context.Context) error {
 	server := mcp.NewServer(&mcp.Implementation{
@@ -99,23 +109,28 @@ func (s *Server) Run(ctx context.Context) error {
 	// Add tools
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_emails",
-		Description: "List all captured emails with optional filters",
+		Description: "List captured emails with optional filtering and pagination. Supports filtering by from, to, subject. Use limit/offset for pagination.",
 	}, s.listEmails)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_email",
-		Description: "Get full details of a specific email by ID",
+		Description: "Get complete email details by ID including body, HTML body, and headers.",
 	}, s.getEmail)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "search_emails",
-		Description: "Search emails by content in subject or body",
+		Description: "Search emails by text content in subject or body (case-insensitive).",
 	}, s.searchEmails)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_stats",
-		Description: "Get email statistics and server configuration",
+		Description: "Get email statistics and server configuration (total count, SMTP/HTTP addresses).",
 	}, s.getStats)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_all_emails",
+		Description: "Delete all captured emails from the mailer.",
+	}, s.deleteAllEmails)
 
 	// Run with stdio transport
 	return server.Run(ctx, &mcp.StdioTransport{})
@@ -173,9 +188,41 @@ func (s *Server) listEmails(ctx context.Context, req *mcp.CallToolRequest, input
 		})
 	}
 
+	totalCount := len(filtered)
+
+	// Apply pagination
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 50 // Default limit
+	}
+	if limit > 200 {
+		limit = 200 // Max limit
+	}
+
+	offset := input.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Apply offset
+	if offset >= len(filtered) {
+		filtered = []EmailSummary{}
+	} else {
+		filtered = filtered[offset:]
+	}
+
+	// Apply limit
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+
+	hasMore := offset+len(filtered) < totalCount
+
 	return nil, &ListEmailsOutput{
-		Emails: filtered,
-		Count:  len(filtered),
+		Emails:     filtered,
+		Count:      len(filtered),
+		TotalCount: totalCount,
+		HasMore:    hasMore,
 	}, nil
 }
 
@@ -234,6 +281,37 @@ func (s *Server) getStats(ctx context.Context, req *mcp.CallToolRequest, input s
 		TotalEmails: len(emails),
 		SMTPAddr:    config.SMTPAddr,
 		HTTPAddr:    config.HTTPAddr,
+	}, nil
+}
+
+// deleteAllEmails tool implementation
+func (s *Server) deleteAllEmails(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, *DeleteAllEmailsOutput, error) {
+	// Get count before deletion
+	emails, err := s.fetchAllEmails()
+	if err != nil {
+		return nil, nil, err
+	}
+	count := len(emails)
+
+	// Call DELETE /api/emails
+	httpReq, err := http.NewRequest(http.MethodDelete, s.apiURL+"/api/emails", nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := s.client.Do(httpReq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to delete emails: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	return nil, &DeleteAllEmailsOutput{
+		DeletedCount: count,
+		Message:      fmt.Sprintf("Deleted %d email(s)", count),
 	}, nil
 }
 
