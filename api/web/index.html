@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mailer</title>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script defer src="alpine.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -114,12 +114,14 @@
             color: #2c3e50;
             margin-bottom: 4px;
             font-size: 14px;
+            overflow-wrap: anywhere;
         }
 
         .email-subject {
             color: #555;
             margin-bottom: 4px;
             font-size: 13px;
+            overflow-wrap: anywhere;
         }
 
         .email-date {
@@ -163,6 +165,27 @@
             background: #c0392b;
         }
 
+        .detail-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .back-btn {
+            display: none;
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .back-btn:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+
         .detail-content {
             padding: 20px;
             overflow-y: auto;
@@ -184,6 +207,7 @@
         .detail-value {
             color: #2c3e50;
             font-size: 14px;
+            overflow-wrap: anywhere;
         }
 
         .tabs {
@@ -250,6 +274,54 @@
             padding: 20px;
             color: #95a5a6;
         }
+
+        @media (max-width: 800px) {
+            .container {
+                padding: 10px;
+            }
+
+            header {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 10px;
+                padding: 15px;
+            }
+
+            .layout {
+                grid-template-columns: 1fr;
+                height: auto;
+            }
+
+            .layout.detail-open .email-list {
+                display: none;
+            }
+
+            .layout:not(.detail-open) .email-detail {
+                display: none;
+            }
+
+            .email-list {
+                max-height: calc(100vh - 170px);
+            }
+
+            .email-detail {
+                min-height: calc(100vh - 170px);
+            }
+
+            .back-btn {
+                display: inline-block;
+            }
+
+            .tabs {
+                overflow-x: auto;
+            }
+
+            .tab {
+                flex: 0 0 auto;
+                padding: 10px 14px;
+                white-space: nowrap;
+            }
+        }
     </style>
 </head>
 <body>
@@ -264,7 +336,7 @@
             </div>
         </header>
 
-        <div class="layout">
+        <div class="layout" :class="{ 'detail-open': selectedEmail }">
             <!-- Email List -->
             <div class="email-list">
                 <div class="list-header">
@@ -299,9 +371,12 @@
             <div class="email-detail">
                 <div class="detail-header">
                     <h2>Email Details</h2>
-                    <button class="delete-btn" @click="deleteEmail(selectedEmail.id)" x-show="selectedEmail">
-                        Delete
-                    </button>
+                    <div class="detail-actions">
+                        <button class="back-btn" @click="selectedEmail = null">← Inbox</button>
+                        <button class="delete-btn" @click="deleteEmail(selectedEmail.id)" x-show="selectedEmail">
+                            Delete
+                        </button>
+                    </div>
                 </div>
                 <div class="detail-content">
                     <template x-if="!selectedEmail">
@@ -372,9 +447,9 @@
                 emails: [],
                 selectedEmail: null,
                 activeTab: 'html',
-                smtpAddr: ':2500',
-                imapAddr: ':1143',
-                httpAddr: ':8080',
+                smtpAddr: 'localhost:2500',
+                imapAddr: 'localhost:1143',
+                httpAddr: window.location.host,
 
                 init() {
                     this.fetchConfig();
@@ -387,9 +462,9 @@
                     try {
                         const response = await fetch('/api/config');
                         const config = await response.json();
-                        this.smtpAddr = config.smtpAddr;
-                        this.imapAddr = config.imapAddr;
-                        this.httpAddr = config.httpAddr;
+                        this.smtpAddr = this.formatAddr(config.smtpAddr);
+                        this.imapAddr = this.formatAddr(config.imapAddr);
+                        this.httpAddr = window.location.host;
                     } catch (error) {
                         console.error('Error fetching config:', error);
                     }
@@ -397,22 +472,20 @@
 
                 async fetchEmails() {
                     try {
-                        const response = await fetch('/api/emails');
+                        const response = await fetch('/api/emails?summary=1');
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
                         const newEmails = await response.json();
 
-                        // Sort by received date, newest first
+                        // Sort by received date, newest first. IDs break ties
+                        // when timestamps fall within the same millisecond.
                         this.emails = newEmails.sort((a, b) =>
-                            new Date(b.receivedAt) - new Date(a.receivedAt)
+                            new Date(b.receivedAt) - new Date(a.receivedAt) || b.id - a.id
                         );
 
-                        // Update selected email if it exists
-                        if (this.selectedEmail) {
-                            const updated = this.emails.find(e => e.id === this.selectedEmail.id);
-                            if (updated) {
-                                this.selectedEmail = updated;
-                            } else {
-                                this.selectedEmail = null;
-                            }
+                        // Keep the selected email's full detail; drop it only
+                        // when it no longer exists (e.g. deleted in another tab).
+                        if (this.selectedEmail && !this.emails.some(e => e.id === this.selectedEmail.id)) {
+                            this.selectedEmail = null;
                         }
                     } catch (error) {
                         console.error('Error fetching emails:', error);
@@ -422,8 +495,17 @@
                 async selectEmail(id) {
                     try {
                         const response = await fetch(`/api/emails/${id}`);
+                        if (!response.ok) {
+                            this.selectedEmail = null;
+                            await this.fetchEmails();
+                            return;
+                        }
                         this.selectedEmail = await response.json();
                         this.activeTab = this.selectedEmail.htmlBody ? 'html' : 'text';
+
+                        if (window.innerWidth <= 800) {
+                            window.scrollTo({ top: 0 });
+                        }
 
                         // Wait for next tick to ensure iframe is rendered
                         await this.$nextTick();
@@ -481,6 +563,14 @@
                     } catch (error) {
                         console.error('Error deleting all emails:', error);
                     }
+                },
+
+                formatAddr(addr) {
+                    if (!addr) return 'localhost';
+                    if (addr.startsWith(':')) return 'localhost' + addr;
+                    if (addr.startsWith('0.0.0.0:')) return 'localhost:' + addr.slice(8);
+                    if (addr.startsWith('[::]:')) return 'localhost:' + addr.slice(5);
+                    return addr;
                 },
 
                 formatDate(dateStr) {

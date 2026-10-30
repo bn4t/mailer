@@ -6,10 +6,11 @@ A simple SMTP mail server written in Go that captures emails and displays them i
 
 - **SMTP Server**: Receives emails on port 2500
 - **IMAP Server**: Access emails via IMAP on port 1143
-- **Web Interface**: View captured emails in a clean, modern UI
+- **Web Interface**: View captured emails in a clean, modern UI (works offline, no CDN required)
 - **Real-time Updates**: Auto-refreshes every 2 seconds to show new emails
 - **Email Management**: View, delete individual emails or clear all emails
 - **Multiple Views**: View plain text, HTML, and raw headers
+- **Rich Content**: Nested MIME messages, encoded headers, non-UTF-8 charsets, and inline `cid:` images are rendered correctly
 - **MCP Support**: Expose emails to AI assistants via Model Context Protocol
 - **In-Memory Storage**: Fast, lightweight storage (emails are lost on restart)
 
@@ -32,7 +33,8 @@ mailer/
 ├── api/
 │   ├── handlers.go     # HTTP API handlers
 │   └── web/
-│       └── index.html  # AlpineJS web interface
+│       ├── index.html  # AlpineJS web interface
+│       └── alpine.min.js # Bundled AlpineJS runtime
 └── mcp/
     └── server.go       # MCP server (HTTP client to daemon)
 ```
@@ -44,6 +46,8 @@ mailer/
 ```bash
 go build -o mailer
 ```
+
+Run the test suite with `go test ./...`.
 
 ### Run
 
@@ -140,7 +144,9 @@ You can connect to the mailer using any IMAP client (Thunderbird, Apple Mail, Ou
 
 **Supported IMAP Operations:**
 - ✅ List emails (INBOX mailbox)
-- ✅ Read email content
+- ✅ Read email content, including MIME parts and attachments
+- ✅ Search messages (flags, headers, body, size, and dates)
+- ✅ Manage flags (seen, deleted, flagged, answered, draft)
 - ✅ Delete emails (mark as deleted + expunge)
 - ❌ Creating new messages (not supported)
 - ❌ Multiple mailboxes (only INBOX available)
@@ -176,6 +182,7 @@ imap.logout()
 The application provides a REST API:
 
 - `GET /api/emails` - List all captured emails
+  - Add `?summary=1` to omit bodies and headers (used by the web UI's polling loop)
 - `GET /api/emails/:id` - Get a specific email
 - `GET /api/config` - Get server configuration (SMTP port, HTTP address)
 - `DELETE /api/emails/:id` - Delete a specific email
@@ -217,9 +224,9 @@ The MCP server connects to the running daemon and exposes email data through the
 
 The MCP server provides the following tools:
 
-- **list_emails** - List all emails with optional filters
-  - Optional parameters: `from`, `to`, `subject`
-  - Returns: Array of email summaries with count
+- **list_emails** - List all emails with optional filters and pagination
+  - Optional parameters: `from`, `to`, `subject`, `offset`, `limit`
+  - Returns: Array of email summaries with count, total count, and `hasMore`
 
 - **get_email** - Get full details of a specific email
   - Required parameter: `id` (email ID)
@@ -227,11 +234,14 @@ The MCP server provides the following tools:
 
 - **search_emails** - Search emails by content
   - Required parameter: `query` (search term)
-  - Searches in: subject and body fields
+  - Searches in: subject, plain-text body, and HTML body
   - Returns: Matching emails with count
 
 - **get_stats** - Get email statistics and server info
   - Returns: Total email count, SMTP port, HTTP address
+
+- **delete_all_emails** - Delete all captured emails
+  - Returns: Number of deleted emails
 
 ### Claude Desktop Configuration
 
@@ -280,8 +290,9 @@ The application supports graceful shutdown. Press `Ctrl+C` to stop the servers. 
 
 - [github.com/emersion/go-smtp](https://github.com/emersion/go-smtp) - SMTP server library
 - [github.com/emersion/go-imap](https://github.com/emersion/go-imap) - IMAP server library
+- [github.com/emersion/go-message](https://github.com/emersion/go-message) - MIME parsing
 - [github.com/modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) - MCP SDK for Go
-- [AlpineJS](https://alpinejs.dev/) - Frontend framework (loaded via CDN)
+- [AlpineJS](https://alpinejs.dev/) - Frontend framework (bundled in `api/web/`)
 
 ## License
 

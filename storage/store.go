@@ -8,9 +8,9 @@ import (
 
 // Store manages email storage in memory
 type Store struct {
-	mu      sync.RWMutex
-	emails  map[int]*models.Email
-	nextID  int
+	mu     sync.RWMutex
+	emails map[int]*models.Email
+	nextID int
 }
 
 // NewStore creates a new email store
@@ -72,13 +72,13 @@ func (s *Store) Delete(id int) bool {
 	return false
 }
 
-// DeleteAll removes all emails
+// DeleteAll removes all emails. IDs are never reused so IMAP UIDs stay unique
+// for the lifetime of the server process.
 func (s *Store) DeleteAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.emails = make(map[int]*models.Email)
-	s.nextID = 1
 }
 
 // Count returns the number of stored emails
@@ -87,4 +87,12 @@ func (s *Store) Count() int {
 	defer s.mu.RUnlock()
 
 	return len(s.emails)
+}
+
+// NextID returns the ID that will be assigned to the next saved email.
+func (s *Store) NextID() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.nextID
 }

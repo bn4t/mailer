@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 //go:embed web/*
@@ -80,7 +81,7 @@ func (h *Handler) handleEmails(w http.ResponseWriter, r *http.Request) {
 // handleEmailByID handles GET (single email) and DELETE (single email)
 func (h *Handler) handleEmailByID(w http.ResponseWriter, r *http.Request) {
 	// Extract ID from path
-	path := strings.TrimPrefix(r.URL.Path, "/api/emails/")
+	path := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/emails/"), "/")
 	id, err := strconv.Atoi(path)
 	if err != nil {
 		http.Error(w, "Invalid email ID", http.StatusBadRequest)
@@ -97,10 +98,38 @@ func (h *Handler) handleEmailByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// emailSummary is the lightweight email representation used by the web UI's
+// polling loop. Full bodies are only fetched when an email is opened.
+type emailSummary struct {
+	ID         int       `json:"id"`
+	From       string    `json:"from"`
+	To         []string  `json:"to"`
+	Subject    string    `json:"subject"`
+	Date       time.Time `json:"date"`
+	ReceivedAt time.Time `json:"receivedAt"`
+}
+
 // listEmails returns all emails
 func (h *Handler) listEmails(w http.ResponseWriter, r *http.Request) {
 	emails := h.store.GetAll()
 	w.Header().Set("Content-Type", "application/json")
+
+	if r.URL.Query().Get("summary") == "1" {
+		summaries := make([]emailSummary, 0, len(emails))
+		for _, email := range emails {
+			summaries = append(summaries, emailSummary{
+				ID:         email.ID,
+				From:       email.From,
+				To:         email.To,
+				Subject:    email.Subject,
+				Date:       email.Date,
+				ReceivedAt: email.ReceivedAt,
+			})
+		}
+		json.NewEncoder(w).Encode(summaries)
+		return
+	}
+
 	json.NewEncoder(w).Encode(emails)
 }
 
@@ -139,6 +168,9 @@ func (h *Handler) corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)

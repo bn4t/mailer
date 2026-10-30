@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	stdmail "net/mail"
+	"net/textproto"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -12,10 +16,9 @@ import (
 
 // Mailbox implements the IMAP mailbox interface
 type Mailbox struct {
-	name           string
-	user           *User
-	backend        *Backend
-	deletedFlags   map[uint32]bool // Track which messages are marked for deletion
+	name    string
+	user    *User
+	backend *Backend
 }
 
 // Name returns the mailbox name
@@ -38,22 +41,19 @@ func (m *Mailbox) Status(items []imap.StatusItem) (*imap.MailboxStatus, error) {
 	emails := m.backend.store.GetAll()
 
 	status := imap.NewMailboxStatus(m.name, items)
-	status.Flags = []string{imap.SeenFlag, imap.DeletedFlag}
-	status.PermanentFlags = []string{imap.SeenFlag, imap.DeletedFlag}
-	status.UnseenSeqNum = 0
+	status.Flags = systemFlags()
+	status.PermanentFlags = append(systemFlags(), imap.TryCreateFlag)
+	status.Messages = uint32(len(emails))
+	status.Recent = 0
+	status.UidNext = uint32(m.backend.store.NextID())
+	status.UidValidity = m.backend.uidValidity
 
-	for _, item := range items {
-		switch item {
-		case imap.StatusMessages:
-			status.Messages = uint32(len(emails))
-		case imap.StatusUidNext:
-			status.UidNext = uint32(len(emails) + 1)
-		case imap.StatusUidValidity:
-			status.UidValidity = 1
-		case imap.StatusRecent:
-			status.Recent = 0
-		case imap.StatusUnseen:
-			status.Unseen = 0
+	for i, email := range emails {
+		if !m.user.hasFlag(email.ID, imap.SeenFlag) {
+			status.Unseen++
+			if status.UnseenSeqNum == 0 {
+				status.UnseenSeqNum = uint32(i + 1)
+			}
 		}
 	}
 
@@ -75,45 +75,45 @@ func (m *Mailbox) ListMessages(uid bool, seqset *imap.SeqSet, items []imap.Fetch
 	defer close(ch)
 
 	emails := m.backend.store.GetAll()
+	markSeen := fetchMarksSeen(items)
 
 	for i, email := range emails {
 		seqNum := uint32(i + 1)
 		uidNum := uint32(email.ID)
 
-		// Check if this message is in the requested sequence set
 		checkNum := seqNum
 		if uid {
 			checkNum = uidNum
 		}
-		if !seqset.Contains(checkNum) {
+		if seqset != nil && !seqset.Contains(checkNum) {
 			continue
+		}
+
+		if markSeen && !m.user.hasFlag(email.ID, imap.SeenFlag) {
+			m.user.addFlags(email.ID, []string{imap.SeenFlag})
 		}
 
 		msg := imap.NewMessage(seqNum, items)
 		for _, item := range items {
 			switch item {
 			case imap.FetchEnvelope:
-				msg.Envelope = m.buildEnvelope(email)
+				msg.Envelope = buildEnvelope(email)
 			case imap.FetchBody, imap.FetchBodyStructure:
-				msg.BodyStructure = m.buildBodyStructure(email)
+				msg.BodyStructure = buildBodyStructure(email)
 			case imap.FetchFlags:
-				msg.Flags = []string{}
-				if m.deletedFlags[uidNum] {
-					msg.Flags = append(msg.Flags, imap.DeletedFlag)
-				}
+				msg.Flags = m.user.messageFlags(email.ID)
 			case imap.FetchInternalDate:
 				msg.InternalDate = email.ReceivedAt
 			case imap.FetchRFC822Size:
-				msg.Size = uint32(len(email.Body))
+				msg.Size = uint32(len(messageRaw(email)))
 			case imap.FetchUid:
 				msg.Uid = uidNum
 			default:
-				// Handle BODY[] and BODY[HEADER] requests
 				section, err := imap.ParseBodySectionName(item)
 				if err != nil {
 					continue
 				}
-				msg.Body[section] = m.buildBody(email, section)
+				msg.Body[section] = bytes.NewReader(m.buildBody(email, section))
 			}
 		}
 
@@ -124,105 +124,158 @@ func (m *Mailbox) ListMessages(uid bool, seqset *imap.SeqSet, items []imap.Fetch
 }
 
 // buildEnvelope creates an IMAP envelope from an email
-func (m *Mailbox) buildEnvelope(email *models.Email) *imap.Envelope {
-	return &imap.Envelope{
+func buildEnvelope(email *models.Email) *imap.Envelope {
+	from := parseAddress(email.From)
+
+	envelope := &imap.Envelope{
 		Date:    email.Date,
 		Subject: email.Subject,
-		From:    []*imap.Address{parseAddress(email.From)},
 		To:      parseAddresses(email.To),
-		Sender:  []*imap.Address{parseAddress(email.From)},
 	}
+	if from != nil {
+		envelope.From = []*imap.Address{from}
+		envelope.Sender = []*imap.Address{from}
+	}
+
+	return envelope
 }
 
-// buildBodyStructure creates a body structure for an email
-func (m *Mailbox) buildBodyStructure(email *models.Email) *imap.BodyStructure {
-	if email.HTMLBody != "" {
-		// Multipart message with text and HTML
+// buildBodyStructure creates a body structure matching the raw message
+func buildBodyStructure(email *models.Email) *imap.BodyStructure {
+	root, _, err := parseRawMessage(messageRaw(email))
+	if err != nil {
 		return &imap.BodyStructure{
-			MIMEType:    "multipart",
-			MIMESubType: "alternative",
-			Parts: []*imap.BodyStructure{
-				{
-					MIMEType:    "text",
-					MIMESubType: "plain",
-					Params:      map[string]string{"charset": "utf-8"},
-					Size:        uint32(len(email.Body)),
-				},
-				{
-					MIMEType:    "text",
-					MIMESubType: "html",
-					Params:      map[string]string{"charset": "utf-8"},
-					Size:        uint32(len(email.HTMLBody)),
-				},
-			},
+			MIMEType:    "text",
+			MIMESubType: "plain",
+			Params:      map[string]string{"charset": "utf-8"},
+			Encoding:    "8bit",
+			Size:        uint32(len(email.Body)),
+			Lines:       lineCount([]byte(email.Body)),
 		}
 	}
 
-	// Plain text only
-	return &imap.BodyStructure{
-		MIMEType:    "text",
-		MIMESubType: "plain",
-		Params:      map[string]string{"charset": "utf-8"},
-		Size:        uint32(len(email.Body)),
-	}
+	return root.bodyStructure()
 }
 
-// buildBody creates the body content for an email
-func (m *Mailbox) buildBody(email *models.Email, section *imap.BodySectionName) imap.Literal {
-	var buf bytes.Buffer
-
-	if section.Specifier == imap.HeaderSpecifier {
-		// Return headers
-		fmt.Fprintf(&buf, "From: %s\r\n", email.From)
-		fmt.Fprintf(&buf, "To: %s\r\n", email.To[0])
-		fmt.Fprintf(&buf, "Subject: %s\r\n", email.Subject)
-		fmt.Fprintf(&buf, "Date: %s\r\n", email.Date.Format(time.RFC1123Z))
-		buf.WriteString("\r\n")
-	} else {
-		// Return full message
-		fmt.Fprintf(&buf, "From: %s\r\n", email.From)
-		fmt.Fprintf(&buf, "To: %s\r\n", email.To[0])
-		fmt.Fprintf(&buf, "Subject: %s\r\n", email.Subject)
-		fmt.Fprintf(&buf, "Date: %s\r\n", email.Date.Format(time.RFC1123Z))
-
-		// Add Content-Type header
-		if email.HTMLBody != "" {
-			buf.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-		} else {
-			buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-		}
-		buf.WriteString("\r\n")
-
-		if email.HTMLBody != "" {
-			buf.WriteString(email.HTMLBody)
-		} else {
-			buf.WriteString(email.Body)
-		}
-	}
-
-	return bytes.NewReader(buf.Bytes())
-}
-
-// SearchMessages searches for messages
+// SearchMessages searches messages using the supplied IMAP criteria
 func (m *Mailbox) SearchMessages(uid bool, criteria *imap.SearchCriteria) ([]uint32, error) {
 	emails := m.backend.store.GetAll()
 
-	// For simplicity, return all message sequence numbers
-	// A full implementation would filter based on criteria
 	results := make([]uint32, 0, len(emails))
-
 	for i, email := range emails {
 		seqNum := uint32(i + 1)
 		uidNum := uint32(email.ID)
 
-		if uid {
-			results = append(results, uidNum)
-		} else {
-			results = append(results, seqNum)
+		if m.matches(email, seqNum, uidNum, criteria) {
+			if uid {
+				results = append(results, uidNum)
+			} else {
+				results = append(results, seqNum)
+			}
 		}
 	}
 
 	return results, nil
+}
+
+func (m *Mailbox) matches(email *models.Email, seqNum, uidNum uint32, criteria *imap.SearchCriteria) bool {
+	if criteria == nil {
+		return true
+	}
+
+	if criteria.SeqNum != nil && !criteria.SeqNum.Contains(seqNum) {
+		return false
+	}
+	if criteria.Uid != nil && !criteria.Uid.Contains(uidNum) {
+		return false
+	}
+
+	if !criteria.Since.IsZero() && email.ReceivedAt.Before(criteria.Since) {
+		return false
+	}
+	if !criteria.Before.IsZero() && !email.ReceivedAt.Before(criteria.Before) {
+		return false
+	}
+	if !criteria.SentSince.IsZero() && email.Date.Before(criteria.SentSince) {
+		return false
+	}
+	if !criteria.SentBefore.IsZero() && !email.Date.Before(criteria.SentBefore) {
+		return false
+	}
+
+	flags := m.user.messageFlags(email.ID)
+	flagSet := make(map[string]bool, len(flags))
+	for _, flag := range flags {
+		flagSet[flag] = true
+	}
+	for _, flag := range criteria.WithFlags {
+		if !flagSet[imap.CanonicalFlag(flag)] {
+			return false
+		}
+	}
+	for _, flag := range criteria.WithoutFlags {
+		if flagSet[imap.CanonicalFlag(flag)] {
+			return false
+		}
+	}
+
+	raw := messageRaw(email)
+	if criteria.Larger > 0 && uint32(len(raw)) <= criteria.Larger {
+		return false
+	}
+	if criteria.Smaller > 0 && uint32(len(raw)) >= criteria.Smaller {
+		return false
+	}
+
+	headers, _ := parseHeaderBytes(rawHeaderBytes(raw))
+	bodyText := strings.ToLower(email.Body + "\n" + email.HTMLBody)
+	text := strings.ToLower(email.RawHeaders + "\n" + email.Body + "\n" + email.HTMLBody)
+
+	for key, values := range criteria.Header {
+		for _, value := range values {
+			if !headerContains(headers, key, value) {
+				return false
+			}
+		}
+	}
+	for _, value := range criteria.Body {
+		if !strings.Contains(bodyText, strings.ToLower(value)) {
+			return false
+		}
+	}
+	for _, value := range criteria.Text {
+		if !strings.Contains(text, strings.ToLower(value)) {
+			return false
+		}
+	}
+
+	for _, sub := range criteria.Not {
+		if m.matches(email, seqNum, uidNum, sub) {
+			return false
+		}
+	}
+	for _, pair := range criteria.Or {
+		if !m.matches(email, seqNum, uidNum, pair[0]) && !m.matches(email, seqNum, uidNum, pair[1]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func headerContains(headers textproto.MIMEHeader, key, value string) bool {
+	values := headers[textproto.CanonicalMIMEHeaderKey(key)]
+	if len(values) == 0 {
+		return false
+	}
+
+	needle := strings.ToLower(value)
+	for _, candidate := range values {
+		if strings.Contains(strings.ToLower(candidate), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateMessage creates a new message (not supported)
@@ -234,36 +287,25 @@ func (m *Mailbox) CreateMessage(flags []string, date time.Time, body imap.Litera
 func (m *Mailbox) UpdateMessagesFlags(uid bool, seqset *imap.SeqSet, operation imap.FlagsOp, flags []string) error {
 	emails := m.backend.store.GetAll()
 
-	// Check if we're setting the Deleted flag
-	hasDeletedFlag := false
-	for _, flag := range flags {
-		if flag == imap.DeletedFlag {
-			hasDeletedFlag = true
-			break
-		}
-	}
-
-	if !hasDeletedFlag {
-		return nil
-	}
-
-	// Mark messages as deleted
 	for i, email := range emails {
 		seqNum := uint32(i + 1)
 		uidNum := uint32(email.ID)
 
-		// Check correct identifier based on uid flag
 		checkNum := seqNum
 		if uid {
 			checkNum = uidNum
 		}
+		if seqset != nil && !seqset.Contains(checkNum) {
+			continue
+		}
 
-		if seqset.Contains(checkNum) {
-			if operation == imap.AddFlags || operation == imap.SetFlags {
-				m.deletedFlags[uidNum] = true
-			} else if operation == imap.RemoveFlags {
-				delete(m.deletedFlags, uidNum)
-			}
+		switch operation {
+		case imap.AddFlags:
+			m.user.addFlags(email.ID, flags)
+		case imap.RemoveFlags:
+			m.user.removeFlags(email.ID, flags)
+		case imap.SetFlags:
+			m.user.replaceFlags(email.ID, flags)
 		}
 	}
 
@@ -277,30 +319,203 @@ func (m *Mailbox) CopyMessages(uid bool, seqset *imap.SeqSet, dest string) error
 
 // Expunge permanently removes messages marked as deleted
 func (m *Mailbox) Expunge() error {
-	// Delete all messages marked for deletion
-	for emailID := range m.deletedFlags {
-		m.backend.store.Delete(int(emailID))
+	emails := m.backend.store.GetAll()
+
+	var deleted []int
+	for _, email := range emails {
+		if m.user.hasFlag(email.ID, imap.DeletedFlag) {
+			deleted = append(deleted, email.ID)
+		}
 	}
 
-	// Clear the deleted flags map
-	m.deletedFlags = make(map[uint32]bool)
+	for _, id := range deleted {
+		m.backend.store.Delete(id)
+		m.user.replaceFlags(id, nil)
+	}
 
 	return nil
 }
 
+// buildBody returns the content of a body section.
+func (m *Mailbox) buildBody(email *models.Email, section *imap.BodySectionName) []byte {
+	raw := messageRaw(email)
+	root, rawHeaders, err := parseRawMessage(raw)
+	if err != nil {
+		return nil
+	}
+
+	part := root
+	if len(section.Path) > 0 {
+		part = findPart(root, section.Path)
+		if part == nil {
+			return nil
+		}
+	}
+
+	var data []byte
+	switch section.Specifier {
+	case imap.HeaderSpecifier:
+		if len(section.Path) == 0 {
+			data = headerSection(rawHeaders, root.header, section)
+		} else if part.mediaType == "message" && part.mediaSubType == "rfc822" {
+			inner, innerHeaders, err := parseRawMessage(part.body)
+			if err != nil {
+				return nil
+			}
+			data = headerSection(innerHeaders, inner.header, section)
+		} else {
+			data = part.headerBytes()
+		}
+	case imap.MIMESpecifier:
+		data = part.headerBytes()
+	case imap.TextSpecifier:
+		if part.mediaType == "message" && part.mediaSubType == "rfc822" {
+			_, innerBody := splitRawMessage(part.body)
+			data = innerBody
+		} else {
+			data = part.body
+		}
+	default: // EntireSpecifier
+		if len(section.Path) == 0 {
+			data = raw
+		} else {
+			data = part.body
+		}
+	}
+
+	return applyPartial(data, section.Partial)
+}
+
+// headerSection returns the requested header fields followed by a blank line.
+func headerSection(rawHeaders []byte, header textproto.MIMEHeader, section *imap.BodySectionName) []byte {
+	if len(section.Fields) == 0 && !section.NotFields {
+		return appendHeaderTerminator(normalizeCRLF(rawHeaders))
+	}
+	return formatHeaderFields(header, section.Fields, section.NotFields)
+}
+
+func formatHeaderFields(header textproto.MIMEHeader, fields []string, notFields bool) []byte {
+	selected := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		selected[textproto.CanonicalMIMEHeaderKey(field)] = true
+	}
+
+	keys := make([]string, 0, len(header))
+	for key := range header {
+		include := len(fields) == 0
+		if notFields {
+			include = !selected[key]
+		} else if !include {
+			include = selected[key]
+		}
+		if include {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+
+	var buf bytes.Buffer
+	for _, key := range keys {
+		for _, value := range header[key] {
+			fmt.Fprintf(&buf, "%s: %s\r\n", key, value)
+		}
+	}
+	buf.WriteString("\r\n")
+	return buf.Bytes()
+}
+
+func appendHeaderTerminator(header []byte) []byte {
+	var buf bytes.Buffer
+	buf.Write(header)
+	if len(header) > 0 && !bytes.HasSuffix(header, []byte("\r\n")) {
+		buf.WriteString("\r\n")
+	}
+	buf.WriteString("\r\n")
+	return buf.Bytes()
+}
+
+func normalizeCRLF(data []byte) []byte {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\n", "\r\n")
+	return []byte(text)
+}
+
+func applyPartial(data []byte, partial []int) []byte {
+	if len(partial) != 2 {
+		return data
+	}
+
+	start, length := partial[0], partial[1]
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(data) {
+		return nil
+	}
+
+	data = data[start:]
+	if length > 0 && len(data) > length {
+		data = data[:length]
+	}
+	return data
+}
+
 // parseAddress parses an email address string into an IMAP address
 func parseAddress(addr string) *imap.Address {
+	if addr == "" {
+		return nil
+	}
+
+	if parsed, err := stdmail.ParseAddress(addr); err == nil {
+		local, domain, _ := strings.Cut(parsed.Address, "@")
+		return &imap.Address{
+			PersonalName: parsed.Name,
+			MailboxName:  local,
+			HostName:     domain,
+		}
+	}
+
+	local, domain, _ := strings.Cut(addr, "@")
 	return &imap.Address{
-		MailboxName: addr,
-		HostName:    "",
+		MailboxName: local,
+		HostName:    domain,
 	}
 }
 
 // parseAddresses parses multiple email addresses
 func parseAddresses(addrs []string) []*imap.Address {
-	result := make([]*imap.Address, len(addrs))
-	for i, addr := range addrs {
-		result[i] = parseAddress(addr)
+	result := make([]*imap.Address, 0, len(addrs))
+	for _, addr := range addrs {
+		if parsed := parseAddress(addr); parsed != nil {
+			result = append(result, parsed)
+		}
+	}
+	if len(result) == 0 {
+		return nil
 	}
 	return result
+}
+
+func systemFlags() []string {
+	return []string{
+		imap.SeenFlag,
+		imap.AnsweredFlag,
+		imap.FlaggedFlag,
+		imap.DeletedFlag,
+		imap.DraftFlag,
+	}
+}
+
+// fetchMarksSeen reports whether a fetch implicitly marks messages as \Seen.
+func fetchMarksSeen(items []imap.FetchItem) bool {
+	for _, item := range items {
+		section, err := imap.ParseBodySectionName(item)
+		if err != nil {
+			continue
+		}
+		if !section.Peek {
+			return true
+		}
+	}
+	return false
 }

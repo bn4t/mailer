@@ -1,20 +1,23 @@
 package smtp
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
-	"mailer/models"
-	"mailer/storage"
 	"mime"
-	"mime/multipart"
-	"mime/quotedprintable"
-	"net/mail"
+	stdmail "net/mail"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/emersion/go-message"
+	_ "github.com/emersion/go-message/charset"
+	gomail "github.com/emersion/go-message/mail"
 	"github.com/emersion/go-smtp"
+	"mailer/models"
+	"mailer/storage"
 )
 
 // Backend implements SMTP server backend
@@ -58,50 +61,20 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 
 // Data receives the email data
 func (s *Session) Data(r io.Reader) error {
-	// Parse the email
-	msg, err := mail.ReadMessage(r)
+	raw, err := io.ReadAll(r)
 	if err != nil {
 		log.Printf("Error reading message: %v", err)
 		return err
 	}
 
-	// Extract headers
-	subject := msg.Header.Get("Subject")
-	date := msg.Header.Get("Date")
-	from := msg.Header.Get("From")
-	if from == "" {
-		from = s.from
+	email, err := parseEmail(raw, s.from, s.to)
+	if err != nil {
+		log.Printf("Error parsing message: %v", err)
+		return err
 	}
 
-	// Parse date
-	parsedDate := time.Now()
-	if date != "" {
-		if t, err := mail.ParseDate(date); err == nil {
-			parsedDate = t
-		}
-	}
-
-	// Extract body
-	body, htmlBody := extractBody(msg)
-
-	// Store raw headers
-	rawHeaders := formatHeaders(msg.Header)
-
-	// Create email object
-	email := &models.Email{
-		From:       from,
-		To:         s.to,
-		Subject:    subject,
-		Body:       body,
-		HTMLBody:   htmlBody,
-		Date:       parsedDate,
-		RawHeaders: rawHeaders,
-		ReceivedAt: time.Now(),
-	}
-
-	// Save to store
 	id := s.store.Save(email)
-	log.Printf("Email received and stored with ID: %d (From: %s, Subject: %s)", id, from, subject)
+	log.Printf("Email received and stored with ID: %d (From: %s, Subject: %s)", id, email.From, email.Subject)
 
 	return nil
 }
@@ -117,95 +90,168 @@ func (s *Session) Logout() error {
 	return nil
 }
 
-// extractBody extracts plain text and HTML body from message
-func extractBody(msg *mail.Message) (string, string) {
-	contentType := msg.Header.Get("Content-Type")
-	mediaType, params, err := mime.ParseMediaType(contentType)
+// parseEmail turns a raw RFC 5322 message into an Email. The raw message is
+// retained so IMAP clients can fetch it exactly as it was received.
+func parseEmail(raw []byte, envelopeFrom string, recipients []string) (*models.Email, error) {
+	mr, err := gomail.CreateReader(bytes.NewReader(raw))
 	if err != nil {
-		// Simple text body
-		body, _ := io.ReadAll(msg.Body)
-		decoded := decodeBody(body, msg.Header.Get("Content-Transfer-Encoding"))
-		return decoded, ""
+		return nil, err
+	}
+	defer mr.Close()
+
+	header := mr.Header
+
+	subject, err := header.Subject()
+	if err != nil {
+		subject = decodeHeader(header.Get("Subject"))
 	}
 
+	from := envelopeFrom
+	if addrs, err := header.AddressList("From"); err == nil && len(addrs) > 0 {
+		from = formatAddress(addrs[0])
+	} else if value := header.Get("From"); value != "" {
+		from = decodeHeader(value)
+	}
+
+	date := time.Now()
+	if parsed, err := header.Date(); err == nil && !parsed.IsZero() {
+		date = parsed
+	}
+
+	body, htmlBody, inlineImages := extractBodies(mr)
+	htmlBody = embedInlineImages(htmlBody, inlineImages)
+
+	return &models.Email{
+		From:       from,
+		To:         recipients,
+		Subject:    subject,
+		Body:       body,
+		HTMLBody:   htmlBody,
+		Date:       date,
+		RawHeaders: rawHeaderText(raw),
+		ReceivedAt: time.Now(),
+		Raw:        raw,
+	}, nil
+}
+
+// extractBodies walks the MIME tree and returns the first plain-text and HTML
+// alternatives plus any inline images that HTML refers to via Content-ID.
+// Attachments are ignored.
+func extractBodies(mr *gomail.Reader) (string, string, map[string]string) {
 	var plainText, htmlText string
+	inlineImages := make(map[string]string)
 
-	if strings.HasPrefix(mediaType, "multipart/") {
-		mr := multipart.NewReader(msg.Body, params["boundary"])
-		for {
-			p, err := mr.NextPart()
-			if err == io.EOF {
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// Unknown charsets still yield a readable part; the body simply
+			// stays in its original encoding. Other errors stop the walk.
+			if part == nil || !message.IsUnknownCharset(err) {
+				log.Printf("Error reading message part: %v", err)
 				break
-			}
-			if err != nil {
-				log.Printf("Error reading part: %v", err)
-				break
-			}
-
-			partType := p.Header.Get("Content-Type")
-			partMedia, _, _ := mime.ParseMediaType(partType)
-			encoding := p.Header.Get("Content-Transfer-Encoding")
-
-			body, _ := io.ReadAll(p)
-			bodyStr := decodeBody(body, encoding)
-
-			if strings.HasPrefix(partMedia, "text/plain") {
-				plainText = bodyStr
-			} else if strings.HasPrefix(partMedia, "text/html") {
-				htmlText = bodyStr
 			}
 		}
-	} else if strings.HasPrefix(mediaType, "text/plain") {
-		body, _ := io.ReadAll(msg.Body)
-		plainText = decodeBody(body, msg.Header.Get("Content-Transfer-Encoding"))
-	} else if strings.HasPrefix(mediaType, "text/html") {
-		body, _ := io.ReadAll(msg.Body)
-		htmlText = decodeBody(body, msg.Header.Get("Content-Transfer-Encoding"))
+		if part == nil {
+			continue
+		}
+
+		contentType, _, _ := mime.ParseMediaType(part.Header.Get("Content-Type"))
+		contentType = strings.ToLower(contentType)
+		if contentType == "" {
+			contentType = "text/plain"
+		}
+
+		if _, ok := part.Header.(*gomail.InlineHeader); ok {
+			switch contentType {
+			case "text/plain":
+				if plainText == "" {
+					if data, err := io.ReadAll(part.Body); err == nil {
+						plainText = string(data)
+					}
+				}
+				continue
+			case "text/html":
+				if htmlText == "" {
+					if data, err := io.ReadAll(part.Body); err == nil {
+						htmlText = string(data)
+					}
+				}
+				continue
+			}
+		}
+
+		if !strings.HasPrefix(contentType, "image/") {
+			continue
+		}
+
+		contentID := strings.Trim(strings.TrimSpace(part.Header.Get("Content-Id")), "<>")
+		if contentID == "" {
+			continue
+		}
+		if data, err := io.ReadAll(part.Body); err == nil {
+			inlineImages[contentID] = fmt.Sprintf(
+				"data:%s;base64,%s",
+				contentType,
+				base64.StdEncoding.EncodeToString(data),
+			)
+		}
+	}
+
+	return plainText, htmlText, inlineImages
+}
+
+// embedInlineImages replaces cid: references in HTML with data URLs so the
+// preview renders embedded images without exposing separate attachment routes.
+func embedInlineImages(html string, images map[string]string) string {
+	for contentID, dataURL := range images {
+		references := []string{
+			"cid:" + contentID,
+			"cid:" + url.QueryEscape(contentID),
+		}
+		for _, reference := range references {
+			html = strings.ReplaceAll(html, reference, dataURL)
+		}
+	}
+	return html
+}
+
+// rawHeaderText returns the original header block with normalized line endings
+// for display. Unlike mail.Header it preserves the order the headers arrived in.
+func rawHeaderText(raw []byte) string {
+	var headers []byte
+	if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
+		headers = raw[:i]
+	} else if i := bytes.Index(raw, []byte("\n\n")); i >= 0 {
+		headers = raw[:i]
 	} else {
-		body, _ := io.ReadAll(msg.Body)
-		plainText = decodeBody(body, msg.Header.Get("Content-Transfer-Encoding"))
+		headers = raw
 	}
 
-	return plainText, htmlText
+	text := strings.ReplaceAll(string(headers), "\r\n", "\n")
+	if text == "" {
+		return text
+	}
+	return strings.TrimRight(text, "\n") + "\n"
 }
 
-// decodeBody decodes the body based on Content-Transfer-Encoding
-func decodeBody(body []byte, encoding string) string {
-	encoding = strings.ToLower(strings.TrimSpace(encoding))
-
-	switch encoding {
-	case "quoted-printable":
-		r := quotedprintable.NewReader(strings.NewReader(string(body)))
-		decoded, err := io.ReadAll(r)
-		if err != nil {
-			log.Printf("Error decoding quoted-printable: %v", err)
-			return string(body)
-		}
-		return string(decoded)
-
-	case "base64":
-		decoded, err := base64.StdEncoding.DecodeString(string(body))
-		if err != nil {
-			log.Printf("Error decoding base64: %v", err)
-			return string(body)
-		}
-		return string(decoded)
-
-	default:
-		// No encoding or 7bit/8bit - return as-is
-		return string(body)
+// decodeHeader decodes RFC 2047 encoded words, falling back to the raw value.
+func decodeHeader(value string) string {
+	decoded, err := (&mime.WordDecoder{CharsetReader: message.CharsetReader}).DecodeHeader(value)
+	if err != nil {
+		return value
 	}
+	return decoded
 }
 
-// formatHeaders formats email headers as a string
-func formatHeaders(header mail.Header) string {
-	var sb strings.Builder
-	for key, values := range header {
-		for _, value := range values {
-			sb.WriteString(fmt.Sprintf("%s: %s\n", key, value))
-		}
+// formatAddress renders an address in "Name <address>" form.
+func formatAddress(addr *gomail.Address) string {
+	if addr.Name == "" {
+		return addr.Address
 	}
-	return sb.String()
+	return fmt.Sprintf("%s <%s>", addr.Name, addr.Address)
 }
 
 // StartServer starts the SMTP server
@@ -227,7 +273,7 @@ func StartServer(store *storage.Store, addr string) error {
 
 // ParseEmailAddress extracts email from address (handles "Name <email>" format)
 func ParseEmailAddress(addr string) string {
-	if parsed, err := mail.ParseAddress(addr); err == nil {
+	if parsed, err := stdmail.ParseAddress(addr); err == nil {
 		return parsed.Address
 	}
 	return addr

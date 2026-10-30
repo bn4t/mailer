@@ -10,6 +10,7 @@ import (
 	mcpserver "mailer/mcp"
 	"mailer/smtp"
 	"mailer/storage"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -87,12 +88,15 @@ func runServer() {
 
 		// Construct proper URL for browser
 		browserURL := *httpAddr
-		if browserURL[0] == ':' {
-			browserURL = "localhost" + browserURL
-		} else if len(browserURL) >= 7 && browserURL[:7] == "0.0.0.0" {
-			browserURL = "localhost" + browserURL[7:]
+		if host, port, err := net.SplitHostPort(*httpAddr); err == nil {
+			if host == "" || host == "0.0.0.0" || host == "::" {
+				host = "localhost"
+			}
+			browserURL = net.JoinHostPort(host, port)
 		}
-		log.Printf("Open http://%s in your browser", browserURL)
+		if browserURL != "" {
+			log.Printf("Open http://%s in your browser", browserURL)
+		}
 
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)

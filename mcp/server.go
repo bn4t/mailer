@@ -248,7 +248,8 @@ func (s *Server) searchEmails(ctx context.Context, req *mcp.CallToolRequest, inp
 
 	for _, email := range emails {
 		if strings.Contains(strings.ToLower(email.Subject), query) ||
-			strings.Contains(strings.ToLower(email.Body), query) {
+			strings.Contains(strings.ToLower(email.Body), query) ||
+			strings.Contains(strings.ToLower(email.HTMLBody), query) {
 			results = append(results, EmailSummary{
 				ID:         email.ID,
 				From:       email.From,
